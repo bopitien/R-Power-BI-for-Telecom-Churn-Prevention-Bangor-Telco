@@ -1,6 +1,7 @@
 ---
-title: "ABJ/ASB-4011 : Data Science"
-author: '500663054'
+title: "R-Power-BI-for-Telecom-Churn-Prevention-Bangor-Telco
+ : Data Science"
+author: 'brume pascal'
 date: "2023-12-14"
 output: word_document
 ---
