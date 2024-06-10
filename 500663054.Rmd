@@ -1,0 +1,529 @@
+---
+title: "ABJ/ASB-4011 : Data Science"
+author: '500663054'
+date: "2023-12-14"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width=10, fig.height=8)
+# Load necessary libraries
+library(rpart)
+library(caret)
+library(rpart.plot)
+library(RMySQL)
+library(dplyr)
+library(tidyverse)
+library(caTools)
+library(reshape2)
+library(pROC)
+library(glmnet)
+library(factoextra)
+library(ggplot2)
+library(pheatmap)
+library(class)
+library(pheatmap)
+library(cluster)
+
+
+```
+
+## INTRODUCTION
+
+This project focuses on understanding customer behavior in the telecommunications industry using data from a fictional company, BangorTelco. The main challenge for BangorTelco and many companies in this industry is keeping their customers, also known as reducing customer churn.
+
+To tackle this problem, i will use three popular data analysis methods: Decision Trees, Logistic Regression, and k-Nearest Neighbors (kNN). Each of these methods will help predict which customers might leave the company (churn) and understand different groups of customers based on their behavior and characteristics.
+
+Also, an essential part of this project is creating a Data Science Dashboard. This tool will use our analysis to show how well our predictions work and allow users to input information and get predictions. This dashboard is not just for showing our results; it's a practical tool for the company to make better decisions based on data.
+
+By doing this project i aim to provide valuable insights to BangorTelco. These insights can help them improve their services, make their customers happier, and reduce the number of customers leaving the company. This project shows how data science can be used in real-world situations to help businesses understand their customers better and make smarter decisions.
+
+
+
+## DATA COLLECTION
+
+In this phase i connected to BangorTelco's MySQL database to retrieve customer data crucial for the analysis. Using the RMySQL package in R to establish a connection using essential credentials: username, password, host, database name, and port number.
+
+A SQL query "SELECT * FROM customer_churn.customers" is executed to fetch all records from the customers table After data retrieval the database connection is closed to maintain security and resource efficiency
+
+```{r}
+# Database Connection
+connection <- dbConnect(MySQL(), user='root', password='Alaji@007', host='localhost', dbname='customer_churn', port=3306)
+
+# Data Retrieval
+query <- "SELECT * FROM customer_churn.customers"
+telco_data <- dbGetQuery(connection, query)
+dbDisconnect(connection)
+head(telco_data)
+```
+
+## DATA PREPROCESSING
+In this tep i refined the dataset to ensure its suitability for analysis. The process involves:
+
+1. Renaming Columns: For better readability and ease of analysis column names are standardized to clearly reflect the data they represent.
+
+2. Data Transformation:Variables are transformed into categorical variables (factors) and required binary format required for certain analytical models.
+3. Data Integrity Checks:check for missing values (nulls) and found no such issues in the data set
+
+
+```{r echo=FALSE}
+# Renaming the columns
+names(telco_data) <- c("customer_id", "college", "annual_income", "monthly_overcharge", "leftover_minutes_percent", 
+                       "house_value", "phone_cost", "long_calls_per_month", "avg_call_duration", "satisfaction_level", 
+                       "usage_level", "considering_plan_change", "churn_status")
+
+
+# Data Preprocessing
+telco_data <- telco_data %>%
+  mutate(college = ifelse(college == 'zero', 0, 1),
+         churn_status = ifelse(churn_status == 'STAY', 0, 1),
+         satisfaction_level = factor(satisfaction_level),
+         usage_level = factor(usage_level),
+         considering_plan_change = factor(considering_plan_change))
+
+#I am converting several character columns to factors because for some models like those for decision trees, they need categorical data to be explicitly declared as factors.So I am converting these columns to ensure my model understands these are categorical variables.
+
+# Checking nulls and duplicates
+print(colSums(is.na(telco_data)))
+print(any(duplicated(telco_data)))
+```
+The variables have been successfully renamed and no nulls or duplicates are found.
+
+## EXPLORATORY DATA ANALYSIS
+
+This section focuses on Exploratory Data Analysis (EDA), where i examine the dataset to understand its characteristics and prepare for more detailed analysis.
+
+```{r echo=FALSE}
+# churn rate
+churn_rate <- mean(telco_data$churn_status) * 100
+print(paste("Churn Rate:", churn_rate, "%"))
+
+# Pie Chart for Churn Status
+ggplot(telco_data, aes(x = "", fill = factor(churn_status))) +
+  geom_bar(width = 1, stat = "count") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = scales::percent(..count../sum(..count..))), position = position_stack(vjust = 0.5), stat = "count") +
+  theme_void() +
+  labs(fill = "Churn Status", title = "Pie Chart of Churn Status Proportions")
+
+
+# Calculating the mean annual income by churn status
+income_vs_churn <- telco_data %>%
+  group_by(churn_status) %>%
+  summarise(mean_income = mean(annual_income))
+
+# Plotting
+ggplot(income_vs_churn, aes(x = factor(churn_status), y = mean_income, fill = factor(churn_status))) +
+  geom_bar(stat = "identity") +
+  labs(x = "Churn Status", y = "Average Annual Income", fill = "Churn Status") +
+  ggtitle("Average Annual Income by Churn Status") +
+  scale_x_discrete(labels = c("No Churn", "Churn"))
+
+#Satisfaction Level vs Churn Status
+ggplot(telco_data, aes(x = satisfaction_level, fill = factor(churn_status))) +
+  geom_bar(position = "fill") +
+  labs(fill = "Churn Status", x = "Satisfaction Level", y = "Proportion") +
+  ggtitle("Satisfaction Level vs Churn Status")
+
+#usage Level vs Churn Status
+ggplot(telco_data, aes(x = usage_level, fill = factor(churn_status))) +
+  geom_bar(position = "fill") +
+  labs(fill = "Churn Status", x = "Usage Level", y = "Proportion") +
+  ggtitle("Usage Level vs Churn Status")
+
+# Correlation Matrix and Heatmap
+numeric_data <- telco_data %>% select_if(is.numeric)
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+melted_cor_matrix <- melt(cor_matrix)
+ggplot(data = melted_cor_matrix, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1,1), space = "Lab", name="Pearson\nCorrelation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1), axis.text.y = element_text(size = 12)) +
+  coord_fixed()
+
+
+```
+From the charts, the data has a fair balance between the two categories ; churn and stayed. This is important to prevent bias in the models. Also there is no issue of multicollinear vaariables from the corelation heatmap visual. Having delved into the data to identify insights, i will proceed into the model Building tasks.
+
+## ANALYSIS
+
+### TASK 1 DECISION TREE
+
+The goal of this task is to develop a Decision Tree model, a straightforward method to predict customer churn and understand the factors influencing their decisions.
+
+```{r echo=FALSE}
+
+# TASK 1 DECISION TREE
+
+data_tree <- telco_data %>% 
+  select(-customer_id)
+
+# setting the seed and Splitting the dataset using cat library
+set.seed(123)
+sample_split <- sample.split(data_tree$churn_status, SplitRatio = 0.70)
+train_data <- subset(data_tree, sample_split == TRUE)
+test_data <- subset(data_tree, sample_split == FALSE)
+
+# Building the decision tree model
+decision_model <- rpart(churn_status ~ ., data = train_data, method = "class", 
+                        minbucket = 5, maxdepth = 6, cp = 0.001)
+
+# Predicting and creating a confusion matrix
+predictions <- predict(decision_model, test_data, type = "class")
+conf_matrix <- table(predictions, test_data$churn_status)
+
+# Display the confusion matrix
+print("Confusion Matrix:")
+print(conf_matrix)
+
+# Extracting True Positives, False Positives, True Negatives, False Negatives
+TP <- conf_matrix[2, 2]
+FP <- conf_matrix[2, 1]
+TN <- conf_matrix[1, 1]
+FN <- conf_matrix[1, 2]
+
+# Calculating accuracy, precision, recall, and F1 score
+accuracy <- (TP + TN) / sum(conf_matrix)
+precision <- TP / (TP + FP)
+recall <- TP / (TP + FN)
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Printing the evaluation metrics
+cat("Model Evaluation Metrics:\n")
+cat(sprintf("Accuracy: %.4f\n", accuracy))
+cat(sprintf("Precision: %.4f\n", precision))
+cat(sprintf("Recall: %.4f\n", recall))
+cat(sprintf("F1 Score: %.4f\n", f1_score))
+
+# Visualizing the decision tree
+rpart.plot(decision_model, main="Decision Tree", extra=104, box.palette="RdBu", 
+           shadow.col="gray", fallen.leaves=TRUE, cex=0.6, type=4)
+```
+
+### Metrics
+
+The Decision Tree model exhibits a strong predictive performance as  by its accuracy of approximately 71.57%. This suggests that the model correctly predicts customer churn status in roughly 72 out of every 100 cases. The precision score of around 68.60% implies that when the model predicts a customer will churn, it is correct approximately 69% of the time. The recall score of approximately 77.98% indicates that the model successfully identifies about 78% of actual churn cases. Finally the F1 score which balance between precision and recall is 72.99%, this shows the model's robustness in accounting for both false positives and false negatives. These metrics collectively aaffirms the model's efficacy in predicting the churn likelihood among customers.
+
+### Tree Visual
+The decision tree visual provided represents a predictive model that classifies customer churn based on several key attributes. It initiates at the root node with a house value threshold and progress into branches, symbolizing different decision paths. Each internal node represents a decision point, such as annual income or monthly overcharge, then splits the data further, leading to the leaf nodes. The leaves represent the outcomes of customer churn indicating the count of customers predicted to churn (1) or not (0).
+
+
+## TASK 2 LOGISTIC REGRESSION
+
+Next,the goal is to build the best logistic regression model to to predict the probability a given customer will leave. To enhance the predictive performance and interpret ability of the model , I utilize the glmnet package. This package is distinguished for its regularization techniques which mitigate overfitting—a common issue when numerous predictors are present (Friedman, Hastie, & Tibshirani, 2010).glmnet effectively reduces the complexity of the model thus ensures that it captures genuine patterns rather than noise. The cross-validation feature within glmnet further helps in selecting the best fit to generalize new and unseen data.
+
+
+```{r echo=FALSE}
+
+
+lr_data <- data_tree
+
+
+# Setting the seed for reproducibility and splitting the dataset
+set.seed(123)
+sample_split <- sample.split(lr_data$churn_status, SplitRatio = 0.70)
+train_data <- subset(lr_data, sample_split == TRUE)
+test_data <- subset(lr_data, sample_split == FALSE)
+
+# Fit logistic regression model using glmnet
+
+# note that cv.glmnet uses cross-validation to select the best lambda automatically
+x_train <- model.matrix(churn_status ~ . - 1, data = train_data)
+y_train <- train_data$churn_status
+cv_fit <- cv.glmnet(x_train, y_train, family = "binomial")
+
+# Make predictions on the test set
+# Convert probabilities to binary outcomes using a 0.5 threshold
+predictions <- predict(cv_fit, newx = model.matrix(churn_status ~ . - 1, data = test_data), s = "lambda.min", type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+# Create confusion matrix and calculate metrics
+conf_matrix <- table(predicted_classes, test_data$churn_status)
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+precision <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+recall <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+f1_score <- 2 * precision * recall / (precision + recall)
+
+# Output these metrics
+cat("Model Evaluation Metrics:\n")
+cat(sprintf("Accuracy: %.4f\n", accuracy))
+cat(sprintf("Precision: %.4f\n", precision))
+cat(sprintf("Recall: %.4f\n", recall))
+cat(sprintf("F1 Score: %.4f\n", f1_score))
+
+# Calculate the ROC curve and AUC
+roc_curve <- roc(test_data$churn_status, predictions)
+plot(roc_curve, col="#1c61b6", lwd=2, main="ROC Curve for Logistic Regression Model")
+abline(a=0, b=1, col="gray", lty=2)
+legend("bottomright", legend=c("Logistic Regression Model", "Chance"), col=c("#1c61b6", "gray"), lwd=2, lty=c(1, 2))
+auc_value <- auc(roc_curve)
+cat(sprintf("\nArea Under the ROC Curve (AUC): %.4f\n", auc_value))
+
+# Extract coefficients at the best lambda
+coef_at_min_lambda <- coef(cv_fit, s = "lambda.min")
+cat("\nCoefficients at Minimum Lambda:\n")
+print(coef_at_min_lambda)
+
+
+
+```
+
+The logistic regression model gives an accuracy of 0.6553,  a fair capability to distinguish between customers who will stay and those likely to churn. The precision measure at 0.6611 suggests that the model has a modest rate of correctly predicting churn when it does so. The recall rate of 0.6164 shows that the model also has moderate success in identifying actual instances of churn among all potential cases. The F1 Score of 0.638 confirms that the model strikes a balance between precision and recall, yet it implies there is potential for improvement.
+
+The ROC curve, with an area under the curve (AUC) of 0.7114, shows that the model has a good ability to differentiate between the positive (churn) and negative (no churn) classes, outperforming random chance. However, the curve and the scores suggest that further refinement could give more accurate predictions or an alternative algorithm.
+
+#### Coefficients:
+
+The coefficients are  in a sparse matrix format which is typical when using glmnet. Each row represents a feature and the number in the s1 column is the coefficient for that feature at the selected lambda value (lambda.min). Coefficients close to zero  have been effectively removed from the model by the regularization process. 
+Furthermore, regarding features with a dot (.) as the coefficient, these have been shrunk to zero by the regularization process, that's is indicating they were not found to be significant predictors in the model by regularization applied.
+Finally, the features with non-zero coefficients are those that the model finds most statistically significant for predicting the outcome.
+
+
+## TASK 3 K NEAREST NEIGHBOR MODEL
+
+In Task 3, I addressed the challenge of predicting customer churn using the k-Nearest Neighbors (kNN) algorithm. It involved customer data to construct a predictive model that identifies the likelihood of customers discontinuing their service. Through data preparation, normalization, and the application of kNN, i aim to derive meaningful insights that could inform retention strategies. The kNN model serves as a tool to capture patterns within  potential churn.
+
+
+```{r echo=FALSE}
+
+
+k_data <- data_tree
+
+# Normalizing numeric features 2 to 8 for better model performance
+k_data[, 2:8] <- scale(k_data[, 2:8])
+
+# Splitting the data set into training and test sets and Setting a seed for reproducibility
+set.seed(123)
+sample_split <- sample.split(k_data$churn_status, SplitRatio = 0.70)
+train_data <- subset(k_data, sample_split == TRUE)
+test_data <- subset(k_data, sample_split == FALSE)
+
+# Convert all features to numeric
+train_data <- as.data.frame(lapply(train_data, as.numeric))
+test_data <- as.data.frame(lapply(test_data, as.numeric))
+
+# Preparing training and test sets for kNN
+x_train_knn <- subset(train_data, select = -churn_status)
+y_train_knn <- train_data$churn_status
+x_test_knn <- subset(test_data, select = -churn_status)
+y_test_knn <- test_data$churn_status
+
+# Train the kNN model
+knn_model <- knn(train = x_train_knn, test = x_test_knn, cl = y_train_knn, k = 5)
+
+# Evaluate the model using confusion matrix and calculate metrics
+conf_matrix_knn <- table(Predictions = knn_model, TrueStatus = y_test_knn)
+accuracy_knn <- sum(diag(conf_matrix_knn)) / sum(conf_matrix_knn)
+precision_knn <- conf_matrix_knn[2, 2] / sum(conf_matrix_knn[2, ])
+recall_knn <- conf_matrix_knn[2, 2] / sum(conf_matrix_knn[, 2])
+f1_score_knn <- 2 * (precision_knn * recall_knn) / (precision_knn + recall_knn)
+
+# Output initial model metrics
+
+cat("Initial kNN Model Metrics:\n")
+cat(sprintf("Accuracy: %.4f\n", accuracy_knn))
+cat(sprintf("Precision: %.4f\n", precision_knn))
+cat(sprintf("Recall: %.4f\n", recall_knn))
+cat(sprintf("F1 Score: %.4f\n", f1_score_knn))
+
+# Cross-validation to find the optimal k value which is key for this algorithm
+control <- trainControl(method = "cv", number = 10)
+y_train_knn_factor <- as.factor(y_train_knn) # Convert to factor for classification
+
+grid <- expand.grid(k = 1:20) # Specifying the range of k to tune
+
+set.seed(123) # Seed for reproducibility
+
+knn_cv_model <- train(x = x_train_knn, y = y_train_knn_factor, method = "knn", trControl = control, tuneGrid = grid)
+
+# Plotting model performance across different k values
+results <- knn_cv_model$results
+ggplot(results, aes(x = k, y = Accuracy)) + geom_line() + geom_point(shape = 1) +
+  ggtitle("kNN Model Performance Across Different k Values") + xlab("Number of Neighbors (k)") +
+  ylab("Accuracy") + theme_minimal()
+
+# Final model prediction using optimal k via cross validation
+optimal_k <- knn_cv_model$bestTune$k
+final_predictions <- knn(train = x_train_knn, test = x_test_knn, cl = y_train_knn, k = optimal_k)
+
+# Calculate and output final model metrics
+final_conf_matrix <- table(Predicted = final_predictions, Actual = y_test_knn)
+final_accuracy <- sum(diag(final_conf_matrix)) / sum(final_conf_matrix)
+final_precision <- final_conf_matrix[2, 2] / sum(final_conf_matrix[2, ])
+final_recall <- final_conf_matrix[2, 2] / sum(final_conf_matrix[, 2])
+final_f1_score <- 2 * (final_precision * final_recall) / (final_precision + final_recall)
+
+cat("\nFinal kNN Model Metrics with k =", optimal_k, ":\n")
+cat(sprintf("Accuracy: %.4f\n", final_accuracy))
+cat(sprintf("Precision: %.4f\n", final_precision))
+cat(sprintf("Recall: %.4f\n", final_recall))
+cat(sprintf("F1 Score: %.4f\n", final_f1_score))
+
+```
+
+The aim of this task is to predict customer churn with KNN. The first step is normalizing numerical attributes to ensure consistent data scaling, crucial for the distance-based kNN algorithm. The initial kNN model showed an accuracy of 65.07%, a precision of 65.08%, a recall of 62.79%, and an F1 score of 63.91%. To improve the model's robustness, 10-fold cross-validation is applied which determines the optimal number of neighbors to be 20. This adjustment enhanced accuracy to 67.23%, with corresponding increases in precision to 68.09% and F1 score to 65.46%. The benefits of cross-validation are evident in the final model with improved consistency and reliability.
+
+
+## TASK 4 CLUSTERING WITH K-MEANS 
+
+In Task 4, the aim is to discover natural groupings within the customer dataset through clustering. Using clustering algorithms, I aimed to identify distinct segments within the customer base which are not defined by pre-existing labels.These clusters are instrumental in informing targeted marketing strategies like offering tailoring service offerings. My goal is to leverage these insights to drive business decisions focused on enhancing customer satisfaction and retention.
+
+
+```{r echo=FALSE}
+
+cluster_data <- data_tree
+
+# scaling the continous variables
+cluster_data[,2:8] <- scale(cluster_data[,2:8])
+
+# Convert categorical variables to dummy variables because columns 9 to 11 are categorical
+dummy_vars <- dummyVars("~ .", data = cluster_data[,9:11])
+
+#merge both scaled and dummy to give the final data
+final_cluster_data <- cbind(cluster_data[,1:8], predict(dummy_vars, newdata = cluster_data[,9:11]))
+head(final_cluster_data)
+
+
+#Step 1: Determine the Optimal Number of Clusters (Elbow Method)
+
+set.seed(123)
+wss <- sapply(1:15, function(k) sum(kmeans(final_cluster_data, centers = k, nstart = 25)$withinss))
+
+
+# Plot the curve for thee Elbow Method 
+plot(1:15, wss, type = "b", xlab = "Number of Clusters", 
+     ylab = "Within-Cluster Sum of Squares", 
+     main = "Elbow Method for Determining Optimal Number of Clusters")
+
+# To determine the ideal number of clusters for k-means clustering, I employed the Elbow Method by manually calculating the within-cluster sum of squares (WSS) for a range of potential cluster counts. This method involves plotting WSS against varying numbers of clusters to visually identify the elbow point. The elbow point represents the number of clusters after which there is a diminishing rate of decrease in WSS, indicating diminishing returns in terms of cluster compactness. Upon examination of the plot, the elbow point appeared to be between 4 and 6 clusters. Consequently, I selected 5 clusters as the optimal number. This choice represents a balance between achieving lower WSS (indicative of tighter clusters) and maintaining a practical number of clusters for subsequent analysis. This balance is crucial for effective clustering that captures meaningful patterns in the data without over fitting.
+
+
+
+# Perform K-Means Clustering with 5 clusters (chosen based on Elbow Method)
+set.seed(123)
+kmeans_result <- kmeans(final_cluster_data, centers = 5, nstart = 25)
+final_cluster_data$cluster <- kmeans_result$cluster
+
+# Determine and print the means for each cluster
+cluster_means <- aggregate(final_cluster_data[, -ncol(final_cluster_data)], 
+                           by = list(cluster = final_cluster_data$cluster), FUN = mean)
+print(cluster_means)
+print(table(final_cluster_data$cluster))
+
+# PCA and Heatmap Visualization
+
+
+# Perform PCA analysis on the scaled data without the cluster column
+pca_result <- prcomp(final_cluster_data[, -ncol(final_cluster_data)], scale. = TRUE)
+
+# Data frame with the PCA results and cluster assignments
+pca_data <- data.frame(PC1 = pca_result$x[, 1], PC2 = pca_result$x[, 2], cluster = final_cluster_data$cluster)
+
+# Plot the first two principal components colored by cluster
+ggplot(pca_data, aes(x = PC1, y = PC2, color = as.factor(cluster))) +
+  geom_point() +
+  scale_color_manual(values = rainbow(5)) +
+  theme_minimal() +
+  labs(title = "PCA Plot of Clusters", x = "Principal Component 1", y = "Principal Component 2", color = "Cluster")
+
+# Prepare the data for the heatmap
+cluster_means_no_cluster <- cluster_means[,-1]
+rownames(cluster_means_no_cluster) <- cluster_means$cluster
+
+# Draw the heatmap
+pheatmap(cluster_means_no_cluster, scale = "row", 
+         clustering_distance_rows = "euclidean", 
+         clustering_distance_cols = "euclidean", 
+         clustering_method = "complete", 
+         color = colorRampPalette(c("blue", "white", "red"))(50))
+
+```
+
+The k-means clustering results are illustrated through the PCA plot and a heat map. The PCA plot effectively displays the distribution of data points across the first two principal components categorized by their clusters. The  table also shows the size of each cluster provides a clear quantitative perspective on the segmentation within the customer base. 
+
+
+
+
+### Cluster 2 Characteristics
+
+* High annual income
+* High monthly overcharge
+* Moderate leftover minutes percent
+* Slightly below-average house value
+* Very high phone cost
+* High number of long calls per month
+* Slightly above-average call duration
+* Satisfaction levels are relatively distributed with a slight lean towards higher satisfaction
+* Moderate usage levels with a tendency towards higher usage
+* Moderate consideration of plan changes
+
+### Explanation in Business Terms based on the Task:
+
+Cluster 2 shows a segment of customers who have high annual incomes and are likely to incur high monthly overcharges. This suggests they are heavy users of the service but may not be on the most cost-efficient plans. Their house values are slightly below average in the data set, maybe they are pragmatic about their spending outside of telecommunications services. The very high phone costs and number of long calls per month may mean that they use their phones very often; maybe for business purposes. This is also supported by their longer average call durations.
+
+This group also shows a varied level of satisfaction, meaning there is room for improving customer experience. Their moderate consideration for plan changes indicates a level of contentment but also presents an opportunity for proposing more suitable plans that cater to their heavy usage patterns.
+
+
+
+## FINAL TASK : PREDICTIVE DASHBOARD
+
+In this final task , the aim is to use the models built in crafting a predictive power BI dashboard. This became the centerpiece for showcasing the models meticulously built. The dashboard integrates the decision tree, logistic regression, and kNN model to predict customer churn with the simplicity of a user-friendly interface.Through the the use of sliders and input fields in the dashboard, any user can now adjust predictors like annual income and monthly overcharge, usage level and user satisfaction and instantly see how these changes affect churn probability. This interactive feature not only makes the dashboard practical but also educational.Thus allowing users  gain insights into the data patterns uncovered.
+
+
+```{r decision-dashboard-img, echo=FALSE, out.width='100%', fig.align='center'}
+library(png)
+library(grid)
+
+decision_dashboard_path <- "C:/Users/ACER SPIN3/Downloads/ASSIGNMENT DATA/DATA SCIENCE/Decision_dashboard.PNG"
+decision_dashboard_img <- readPNG(decision_dashboard_path, native = TRUE)
+grid.raster(decision_dashboard_img)
+```
+
+
+```{r logistic-dashboard-img, echo=FALSE, out.width='100%', fig.align='center'}
+logistic_dashboard_path <- "C:/Users/ACER SPIN3/Downloads/ASSIGNMENT DATA/DATA SCIENCE/Logistic_dashboard.PNG"
+logistic_dashboard_img <- readPNG(logistic_dashboard_path, native = TRUE)
+grid.raster(logistic_dashboard_img)
+```
+
+
+```{r knn-dashboard-img, echo=FALSE, out.width='100%', fig.align='center'}
+knn_dashboard_path <- "C:/Users/ACER SPIN3/Downloads/ASSIGNMENT DATA/DATA SCIENCE/knn_dashboard.PNG"
+knn_dashboard_img <- readPNG(knn_dashboard_path, native = TRUE)
+grid.raster(knn_dashboard_img)
+```
+
+
+## CONCLUSION
+
+This analysis begins from refining data to creating predictive models that turn customer information into actionable insights. I focused on preparing the data meticulously; ensuring data quality,integrity and consistency. Further uncovering hidden trends through Exploratory analysis, and then choosing the right models to meet the specific business needs. From my models built it appears that the decision tree model is more efficient based on the metrics and outcome. However when choosing the right model fit, it is iterative depending on the goal of the business. The development of these models is more than just an exercise in data science, it is about gaining a deeper connection with customer behaviors and needs.The resulting dashboard serves as a practical and straightforward interface for complex data-driven predictions. The steps taken in this analysis has practical application in a real world business setting and will help make informed decisions, improve customer relations, and evolve with the business.
+
+
+
+
+
+## APPENDIX
+
+
+### POWER BI INTERACTIVE VISUAL LINK
+
+Power Bi Interactive Visual Link : https://app.powerbi.com/view?r=eyJrIjoiODgyYTE1ZWUtZTFjNy00OWFlLTgzN2QtMjRmZTQ2MTI5ZGU2IiwidCI6ImRmODY3OWNkLWE4MGUtNDVkOC05OWFjLWM4M2VkN2ZmOTVhMCJ9
+
+
+
+
+### SAVED MODELS
+
+#### Save the decision tree model to disk
+saveRDS(decision_model, "decision_model.rds")
+
+#### Save the logistic regression model to disk
+saveRDS(cv_fit, "logistic_regression_model.rds")
+
+#### Save the training data and labels for kNN to disk
+saveRDS(x_train_knn, "x_train_knn.rds")
+saveRDS(y_train_knn, "y_train_knn.rds")
+
+
+
